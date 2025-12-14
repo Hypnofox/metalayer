@@ -1,0 +1,314 @@
+# Kubernetes Semantic Identity Resolver
+
+A Python microservice that connects to the Kubernetes API to build and maintain a Pod Lease Table, mapping pod IP addresses to their Kubernetes identities for network flow correlation.
+
+## Overview
+
+This service provides semantic identity resolution for Kubernetes workloads by:
+
+1. **Connecting to the Kubernetes API** - Establishes connection using kubeconfig or in-cluster configuration
+2. **Building a Pod Lease Table** - Creates and maintains a mapping of pod IPs to their metadata (name, namespace, labels, service account, etc.)
+3. **Real-time Pod Watching** - Continuously monitors pod changes (ADDED/MODIFIED/DELETED events)
+4. **REST API** - Exposes HTTP endpoints for flow correlation and pod identity lookups
+5. **Correlating Network Flows** - Matches network flow data (source/destination IPs) with pod identities
+
+## Features
+
+- **Automatic Kubernetes Discovery**: Supports both in-cluster and external kubeconfig-based authentication
+- **Real-time Updates**: Uses Kubernetes watch API to track pod changes in real-time
+- **Pod Identity Mapping**: Tracks pod metadata including:
+  - Pod name and namespace
+  - Labels and annotations
+  - Service account
+  - Node assignment
+  - UID and phase
+- **REST API**: FastAPI-based HTTP endpoints with OpenAPI documentation
+- **Flow Correlation**: Map network flows to Kubernetes workload identities
+- **Metrics**: Prometheus-compatible metrics endpoint
+- **Thread-safe**: Safe concurrent access to pod lease table
+
+## Project Structure
+
+```
+metalayer/
+├── main.py              # Main entry point and core logic
+├── api.py               # FastAPI REST API implementation
+├── requirements.txt     # Python dependencies
+├── config/             # Configuration directory
+│   └── kubeconfig      # (Optional) Custom Kubernetes config
+├── tests/              # Unit tests
+│   ├── test_api.py     # API endpoint tests
+│   └── test_watcher.py # Pod watcher tests
+└── README.md           # This file
+```
+
+## Installation
+
+1. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Configure Kubernetes access** (choose one):
+   
+   - **Option A - In-cluster**: Deploy in a Kubernetes cluster with appropriate RBAC permissions
+   - **Option B - Kubeconfig**: Place your kubeconfig file in `config/kubeconfig`
+   - **Option C - Default**: Use your default kubeconfig from `~/.kube/config`
+
+## Usage
+
+### Running with API Server (Default)
+
+```bash
+# Start with API server on default port 8000
+python main.py
+
+# Specify custom host and port
+python main.py --host 0.0.0.0 --port 9000
+
+# Use custom kubeconfig
+python main.py --kubeconfig /path/to/kubeconfig
+```
+
+The API server will be available at `http://localhost:8000` with interactive documentation at `http://localhost:8000/docs`.
+
+### Running Standalone (Watcher Only)
+
+```bash
+# Run without API server
+python main.py --mode standalone
+```
+
+### API Endpoints
+
+#### Flow Correlation
+```bash
+# Correlate a network flow
+curl -X POST http://localhost:8000/api/v1/correlate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_ip": "10.244.1.5",
+    "destination_ip": "10.244.2.10"
+  }'
+```
+
+**Response:**
+```json
+{
+  "source_ip": "10.244.1.5",
+  "destination_ip": "10.244.2.10",
+  "source_identity": {
+    "name": "frontend-pod",
+    "namespace": "default",
+    "labels": {"app": "frontend"},
+    "uid": "abc-123",
+    "node_name": "node-1",
+    "service_account": "default",
+    "phase": "Running"
+  },
+  "destination_identity": {
+    "name": "backend-pod",
+    "namespace": "default",
+    "labels": {"app": "backend"},
+    "uid": "def-456",
+    "node_name": "node-2",
+    "service_account": "backend-sa",
+    "phase": "Running"
+  },
+  "timestamp": 1702123456.789
+}
+```
+
+#### List All Pods
+```bash
+curl http://localhost:8000/api/v1/pods
+```
+
+#### Get Pod by IP
+```bash
+curl http://localhost:8000/api/v1/pods/10.244.1.5
+```
+
+#### Health Check
+```bash
+curl http://localhost:8000/health
+```
+
+**Response:**
+```json
+{
+  "status": "healthy",
+  "kubernetes_connected": true,
+  "pods_tracked": 42,
+  "uptime_seconds": 3600.5
+}
+```
+
+#### Metrics (Prometheus)
+```bash
+curl http://localhost:8000/metrics
+```
+
+### API Documentation
+
+Interactive API documentation is available at:
+- **Swagger UI**: `http://localhost:8000/docs`
+- **ReDoc**: `http://localhost:8000/redoc`
+
+## Configuration
+
+### Kubernetes RBAC
+
+If running in-cluster, ensure the service account has permissions to list and watch pods:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pod-reader
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pod-reader-binding
+subjects:
+- kind: ServiceAccount
+  name: identity-resolver
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+```
+
+### Custom Kubeconfig
+
+Place your kubeconfig file at `config/kubeconfig` to use a specific cluster configuration.
+
+## Architecture
+
+### Core Components
+
+- **K8sIdentityResolver**: Main orchestrator that manages Kubernetes API connection and coordinates pod tracking
+- **PodLeaseTable**: In-memory data structure maintaining the IP-to-identity mapping
+- **Pod Watcher**: Background thread that monitors Kubernetes pod events in real-time
+- **FastAPI Server**: REST API layer for external integrations
+- **Flow Correlation**: Logic to match network flows with pod identities
+
+### Data Flow
+
+```
+Kubernetes API → Pod Watcher → PodLeaseTable → API Endpoints → Flow Correlation
+```
+
+### Real-time Updates
+
+The service uses Kubernetes watch API to receive real-time notifications:
+- **ADDED**: New pod created → Add to lease table
+- **MODIFIED**: Pod updated → Update lease table entry
+- **DELETED**: Pod removed → Remove from lease table
+
+## Development
+
+### Running Tests
+
+```bash
+# Run all tests
+pytest
+
+# Run with verbose output
+pytest -v
+
+# Run with coverage
+pytest --cov=. --cov-report=html
+```
+
+### Code Structure
+
+The main components are organized as:
+- **main.py**: Core resolver logic and pod watching
+- **api.py**: FastAPI application and endpoints
+- **tests/**: Unit tests for all components
+
+## Deployment
+
+### Docker
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+CMD ["python", "main.py", "--mode", "api", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+### Kubernetes
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identity-resolver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: identity-resolver
+  template:
+    metadata:
+      labels:
+        app: identity-resolver
+    spec:
+      serviceAccountName: identity-resolver
+      containers:
+      - name: resolver
+        image: identity-resolver:latest
+        ports:
+        - containerPort: 8000
+        args:
+        - "--mode"
+        - "api"
+        - "--host"
+        - "0.0.0.0"
+        - "--port"
+        - "8000"
+```
+
+## Requirements
+
+- Python 3.8+
+- Kubernetes cluster access
+- Appropriate RBAC permissions for pod listing and watching
+
+## Metrics
+
+The service exposes Prometheus metrics at `/metrics`:
+- `api_requests_total`: Total API requests by method, endpoint, and status
+- `api_request_duration_seconds`: API request duration histogram
+- `flow_correlations_total`: Total flow correlation requests
+
+## Future Enhancements
+
+- [ ] Persistent storage for historical data
+- [ ] Service-level identity resolution
+- [ ] Network policy correlation
+- [ ] Support for multiple clusters
+- [ ] GraphQL API
+- [ ] WebSocket support for real-time updates
+
+## License
+
+[Add your license here]
+
+## Contributing
+
+[Add contribution guidelines here]
+

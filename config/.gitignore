@@ -1,0 +1,5 @@
+# Ignore kubeconfig files to prevent committing credentials
+kubeconfig
+*.yaml
+*.yml
+*.conf
