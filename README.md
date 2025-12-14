@@ -11,6 +11,8 @@ This service provides semantic identity resolution for Kubernetes workloads by:
 3. **Real-time Pod Watching** - Continuously monitors pod changes (ADDED/MODIFIED/DELETED events)
 4. **REST API** - Exposes HTTP endpoints for flow correlation and pod identity lookups
 5. **Correlating Network Flows** - Matches network flow data (source/destination IPs) with pod identities
+6. **Database Integration** - Queries network flows from PostgreSQL database
+7. **Topology Export** - Generates Faddom-compatible topology JSON with nodes and edges
 
 ## Features
 
@@ -24,6 +26,9 @@ This service provides semantic identity resolution for Kubernetes workloads by:
   - UID and phase
 - **REST API**: FastAPI-based HTTP endpoints with OpenAPI documentation
 - **Flow Correlation**: Map network flows to Kubernetes workload identities
+- **Database Integration**: PostgreSQL connector for querying network flows
+- **Topology Export**: Generate Faddom-compatible topology JSON
+- **Deployment Grouping**: Aggregate flows by deployment or pod level
 - **Metrics**: Prometheus-compatible metrics endpoint
 - **Thread-safe**: Safe concurrent access to pod lease table
 
@@ -33,11 +38,17 @@ This service provides semantic identity resolution for Kubernetes workloads by:
 metalayer/
 ├── main.py              # Main entry point and core logic
 ├── api.py               # FastAPI REST API implementation
+├── db.py                # PostgreSQL database connector
+├── correlator.py        # Flow correlation engine
+├── exporter.py          # Topology export to Faddom format
 ├── requirements.txt     # Python dependencies
+├── .env.example         # Example environment configuration
 ├── config/             # Configuration directory
 │   └── kubeconfig      # (Optional) Custom Kubernetes config
 ├── tests/              # Unit tests
 │   ├── test_api.py     # API endpoint tests
+│   ├── test_correlator.py  # Flow correlation tests
+│   ├── test_exporter.py    # Topology export tests
 │   └── test_watcher.py # Pod watcher tests
 └── README.md           # This file
 ```
@@ -49,7 +60,16 @@ metalayer/
    pip install -r requirements.txt
    ```
 
-2. **Configure Kubernetes access** (choose one):
+2. **Configure Database** (for flow correlation):
+   ```bash
+   # Copy example environment file
+   cp .env.example .env
+   
+   # Edit .env with your PostgreSQL credentials
+   # DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
+   ```
+
+3. **Configure Kubernetes access** (choose one):
    
    - **Option A - In-cluster**: Deploy in a Kubernetes cluster with appropriate RBAC permissions
    - **Option B - Kubeconfig**: Place your kubeconfig file in `config/kubeconfig`
@@ -149,6 +169,52 @@ curl http://localhost:8000/health
 curl http://localhost:8000/metrics
 ```
 
+#### Export Topology
+```bash
+# Export topology from network flows
+curl -X POST http://localhost:8000/api/v1/export-topology \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start_time": "2025-12-14T00:00:00Z",
+    "end_time": "2025-12-14T23:59:59Z",
+    "limit": 10000,
+    "group_by_deployment": true
+  }'
+```
+
+**Response:**
+```json
+{
+  "metadata": {
+    "generated_at": "2025-12-14T15:30:00Z",
+    "start_time": "2025-12-14T00:00:00Z",
+    "end_time": "2025-12-14T23:59:59Z",
+    "total_flows": 1523,
+    "total_nodes": 12,
+    "total_edges": 34
+  },
+  "nodes": [
+    {
+      "id": "deployment:default:nginx-deployment",
+      "type": "deployment",
+      "name": "nginx-deployment",
+      "namespace": "default",
+      "labels": {"app": "nginx"},
+      "metadata": {"app": "nginx"}
+    }
+  ],
+  "edges": [
+    {
+      "source": "deployment:default:nginx-deployment",
+      "destination": "deployment:default:redis-deployment",
+      "protocol": "TCP",
+      "bytes": 1048576,
+      "connections": 42
+    }
+  ]
+}
+```
+
 ### API Documentation
 
 Interactive API documentation is available at:
@@ -189,6 +255,45 @@ roleRef:
 
 Place your kubeconfig file at `config/kubeconfig` to use a specific cluster configuration.
 
+### Database Configuration
+
+The service requires PostgreSQL database connection for flow correlation. Configure via environment variables:
+
+```bash
+# Required
+export DB_HOST=localhost
+export DB_PORT=5432
+export DB_NAME=faddom
+export DB_USER=faddom
+export DB_PASSWORD=your_password
+
+# Optional
+export DB_MIN_CONN=1
+export DB_MAX_CONN=10
+export DB_FLOW_TABLE=network_flows
+```
+
+Or use a `.env` file (copy from `.env.example`).
+
+### Database Schema
+
+The service expects a flows table with the following schema:
+
+```sql
+CREATE TABLE network_flows (
+    id SERIAL PRIMARY KEY,
+    source_ip VARCHAR(45) NOT NULL,
+    dest_ip VARCHAR(45) NOT NULL,
+    timestamp TIMESTAMP NOT NULL,
+    protocol VARCHAR(10),
+    bytes BIGINT
+);
+
+CREATE INDEX idx_flows_timestamp ON network_flows(timestamp);
+CREATE INDEX idx_flows_source_ip ON network_flows(source_ip);
+CREATE INDEX idx_flows_dest_ip ON network_flows(dest_ip);
+```
+
 ## Architecture
 
 ### Core Components
@@ -196,13 +301,17 @@ Place your kubeconfig file at `config/kubeconfig` to use a specific cluster conf
 - **K8sIdentityResolver**: Main orchestrator that manages Kubernetes API connection and coordinates pod tracking
 - **PodLeaseTable**: In-memory data structure maintaining the IP-to-identity mapping
 - **Pod Watcher**: Background thread that monitors Kubernetes pod events in real-time
+- **DatabaseConnector**: PostgreSQL connection pool for querying network flows
+- **FlowCorrelator**: Correlates network flows with pod identities using the lease table
+- **TopologyExporter**: Generates Faddom-compatible topology JSON from correlated flows
 - **FastAPI Server**: REST API layer for external integrations
-- **Flow Correlation**: Logic to match network flows with pod identities
 
 ### Data Flow
 
 ```
-Kubernetes API → Pod Watcher → PodLeaseTable → API Endpoints → Flow Correlation
+Kubernetes API → Pod Watcher → PodLeaseTable ↓
+                                              ↓
+PostgreSQL DB → Flow Query → Flow Correlator → Topology Exporter → API Response
 ```
 
 ### Real-time Updates

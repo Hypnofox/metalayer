@@ -5,11 +5,15 @@ Provides HTTP endpoints for flow correlation and pod identity lookups
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, IPvAnyAddress
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from fastapi.responses import Response
 import logging
 import time
+from datetime import datetime
+from db import get_db_connector
+from correlator import FlowCorrelator
+from exporter import TopologyExporter
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +82,31 @@ class PodListResponse(BaseModel):
     """Response for listing all pods"""
     total_pods: int
     pods: Dict[str, PodIdentity]
+
+
+class TopologyExportRequest(BaseModel):
+    """Request model for topology export"""
+    start_time: Optional[str] = Field(None, description="Start time in ISO format")
+    end_time: Optional[str] = Field(None, description="End time in ISO format")
+    limit: Optional[int] = Field(None, description="Maximum number of flows to process")
+    group_by_deployment: bool = Field(True, description="Group pods by deployment")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "start_time": "2025-12-14T00:00:00Z",
+                "end_time": "2025-12-14T23:59:59Z",
+                "limit": 10000,
+                "group_by_deployment": True
+            }
+        }
+
+
+class TopologyExportResponse(BaseModel):
+    """Response model for topology export"""
+    metadata: Dict[str, Any]
+    nodes: List[Dict[str, Any]]
+    edges: List[Dict[str, Any]]
 
 
 def create_app(resolver) -> FastAPI:
@@ -228,5 +257,78 @@ def create_app(resolver) -> FastAPI:
             )
         
         return PodIdentity(**identity)
+    
+    @app.post(
+        "/api/v1/export-topology",
+        response_model=TopologyExportResponse,
+        tags=["Topology"],
+        status_code=status.HTTP_200_OK
+    )
+    async def export_topology(request: TopologyExportRequest):
+        """
+        Export Kubernetes topology from network flows
+        
+        Queries network flows from the database, correlates them with pod identities,
+        and generates a Faddom-compatible topology JSON with nodes and edges.
+        """
+        resolver = app.state.resolver
+        
+        try:
+            # Parse time range
+            start_time = None
+            end_time = None
+            
+            if request.start_time:
+                try:
+                    start_time = datetime.fromisoformat(request.start_time.replace('Z', '+00:00'))
+                except ValueError as e:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Invalid start_time format: {e}"
+                    )
+            
+            if request.end_time:
+                try:
+                    end_time = datetime.fromisoformat(request.end_time.replace('Z', '+00:00'))
+                except ValueError as e:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Invalid end_time format: {e}"
+                    )
+            
+            # Query flows from database
+            db_connector = get_db_connector()
+            flows = db_connector.query_flows(
+                start_time=start_time,
+                end_time=end_time,
+                limit=request.limit
+            )
+            
+            logger.info(f"Retrieved {len(flows)} flows from database")
+            
+            # Correlate flows with pod identities
+            correlator = FlowCorrelator(resolver)
+            correlated_flows = correlator.correlate_flows(flows)
+            
+            logger.info(f"Correlated {len(correlated_flows)} flows")
+            
+            # Export topology
+            exporter = TopologyExporter(group_by_deployment=request.group_by_deployment)
+            topology = exporter.export_topology(
+                correlated_flows=correlated_flows,
+                start_time=start_time,
+                end_time=end_time
+            )
+            
+            return TopologyExportResponse(**topology)
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error exporting topology: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to export topology: {str(e)}"
+            )
     
     return app
