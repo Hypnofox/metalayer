@@ -98,15 +98,24 @@ class DatabaseConnector:
             limit: Maximum number of flows to return (optional)
         
         Returns:
-            List of flow dictionaries with keys: source_ip, dest_ip, timestamp, protocol, bytes
+            List of flow dictionaries with keys: 
+            - source: source IP address
+            - target: destination IP address
+            - port: destination port
+            - last_seen_at: timestamp when flow was last seen
+            - protocol: IP protocol number
+            - request_bytes: bytes sent from source
+            - response_bytes: bytes sent from target
         """
         query = f"""
             SELECT 
-                source_ip,
-                dest_ip,
-                timestamp,
+                source,
+                target,
+                port,
+                last_seen_at,
                 protocol,
-                bytes
+                request_bytes,
+                response_bytes
             FROM {self.config.flow_table}
         """
         
@@ -114,17 +123,17 @@ class DatabaseConnector:
         conditions = []
         
         if start_time:
-            conditions.append("timestamp >= %s")
+            conditions.append("last_seen_at >= %s")
             params.append(start_time)
         
         if end_time:
-            conditions.append("timestamp <= %s")
+            conditions.append("last_seen_at <= %s")
             params.append(end_time)
         
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
         
-        query += " ORDER BY timestamp DESC"
+        query += " ORDER BY last_seen_at DESC"
         
         if limit:
             query += f" LIMIT {limit}"
