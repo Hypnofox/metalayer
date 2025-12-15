@@ -30,7 +30,7 @@ class DatabaseConfig:
         self.password = os.getenv('DB_PASSWORD', '')
         self.min_connections = int(os.getenv('DB_MIN_CONN', '1'))
         self.max_connections = int(os.getenv('DB_MAX_CONN', '10'))
-        self.flow_table = os.getenv('DB_FLOW_TABLE', 'network_flows')
+        self.flow_table = os.getenv('DB_FLOW_TABLE', 'tbl_network_topology')
     
     def get_connection_params(self) -> dict:
         """Get connection parameters as dictionary"""
