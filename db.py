@@ -7,8 +7,14 @@ import logging
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 from contextlib import contextmanager
+from pathlib import Path
 import psycopg2
 from psycopg2 import pool, extras
+from dotenv import load_dotenv
+
+# Load environment variables from .env file in project root
+env_path = Path(__file__).parent / '.env'
+load_dotenv(dotenv_path=env_path)
 
 logger = logging.getLogger(__name__)
 
