@@ -2,6 +2,8 @@
 FastAPI REST API for Kubernetes Semantic Identity Resolver
 Provides HTTP endpoints for flow correlation and pod identity lookups
 """
+import os
+
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, IPvAnyAddress
@@ -120,10 +122,14 @@ def create_app(resolver) -> FastAPI:
         redoc_url="/redoc"
     )
     
-    # CORS middleware
+    # CORS middleware — set CORS_ORIGINS env var to a comma-separated list of allowed
+    # origins (e.g. "https://app.example.com,https://admin.example.com").
+    # Defaults to "*" when the variable is absent; restrict this in production.
+    _cors_env = os.getenv("CORS_ORIGINS", "*")
+    cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # Configure appropriately for production
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -305,10 +311,22 @@ def create_app(resolver) -> FastAPI:
             )
             
             logger.info(f"Retrieved {len(flows)} flows from database")
-            
+
+            # Map DB column names to correlator field names
+            mapped_flows = [
+                {
+                    'source_ip': flow['source'],
+                    'dest_ip': flow['target'],
+                    'timestamp': flow['last_seen_at'],
+                    'protocol': flow.get('protocol', 'TCP'),
+                    'bytes': (flow.get('request_bytes') or 0) + (flow.get('response_bytes') or 0),
+                }
+                for flow in flows
+            ]
+
             # Correlate flows with pod identities
             correlator = FlowCorrelator(resolver)
-            correlated_flows = correlator.correlate_flows(flows)
+            correlated_flows = correlator.correlate_flows(mapped_flows)
             
             logger.info(f"Correlated {len(correlated_flows)} flows")
             
