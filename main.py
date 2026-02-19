@@ -3,9 +3,10 @@
 Kubernetes Semantic Identity Resolver
 Main entry point for the microservice
 """
-import asyncio
 import logging
 import sys
+import threading
+import time
 from pathlib import Path
 
 from kubernetes import client, config
@@ -27,26 +28,31 @@ class PodLeaseTable:
     
     def __init__(self):
         self.pod_ip_map = {}
+        self._lock = threading.RLock()
         logger.info("Initialized Pod Lease Table")
-    
+
     def update_pod(self, pod_ip: str, pod_metadata: dict):
         """Update or add a pod entry in the lease table"""
-        self.pod_ip_map[pod_ip] = pod_metadata
+        with self._lock:
+            self.pod_ip_map[pod_ip] = pod_metadata
         logger.debug(f"Updated pod entry for IP {pod_ip}")
-    
+
     def remove_pod(self, pod_ip: str):
         """Remove a pod entry from the lease table"""
-        if pod_ip in self.pod_ip_map:
-            del self.pod_ip_map[pod_ip]
-            logger.debug(f"Removed pod entry for IP {pod_ip}")
-    
+        with self._lock:
+            if pod_ip in self.pod_ip_map:
+                del self.pod_ip_map[pod_ip]
+        logger.debug(f"Removed pod entry for IP {pod_ip}")
+
     def get_pod_identity(self, pod_ip: str) -> dict:
         """Retrieve pod identity by IP address"""
-        return self.pod_ip_map.get(pod_ip)
-    
+        with self._lock:
+            return self.pod_ip_map.get(pod_ip)
+
     def get_all_pods(self) -> dict:
         """Get all pod mappings"""
-        return self.pod_ip_map.copy()
+        with self._lock:
+            return self.pod_ip_map.copy()
 
 
 class K8sIdentityResolver:
@@ -168,8 +174,6 @@ class K8sIdentityResolver:
     
     def start_watching(self):
         """Start the pod watching thread"""
-        import threading
-        
         if self._watch_thread is not None:
             logger.warning("Pod watcher already running")
             return
@@ -218,7 +222,6 @@ class K8sIdentityResolver:
         try:
             # Keep the service running
             while True:
-                import time
                 time.sleep(60)
         except KeyboardInterrupt:
             logger.info("Shutting down...")

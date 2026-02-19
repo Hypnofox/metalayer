@@ -134,9 +134,10 @@ class DatabaseConnector:
             query += " WHERE " + " AND ".join(conditions)
         
         query += " ORDER BY last_seen_at DESC"
-        
+
         if limit:
-            query += f" LIMIT {limit}"
+            query += " LIMIT %s"
+            params.append(limit)
         
         try:
             with self.get_connection() as conn:
