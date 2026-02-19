@@ -45,6 +45,9 @@ metalayer/
 ├── .env.example         # Example environment configuration
 ├── config/             # Configuration directory
 │   └── kubeconfig      # (Optional) Custom Kubernetes config
+├── probes/             # eBPF probe module (optional live mode)
+│   ├── network_monitor.bpf.c  # Kernel probe for tcp_v4_connect
+│   └── loader.py       # BCC loader for streaming kernel events
 ├── tests/              # Unit tests
 │   ├── test_api.py     # API endpoint tests
 │   ├── test_correlator.py  # Flow correlation tests
@@ -98,6 +101,18 @@ The API server will be available at `http://localhost:8000` with interactive doc
 # Run without API server
 python main.py --mode standalone
 ```
+
+
+### Running in eBPF Live Mode (Optional)
+
+```bash
+# Requires BCC tooling and kernel eBPF support
+python main.py --mode ebpf
+```
+
+In this mode the service listens to live connection events from an eBPF kprobe
+on `tcp_v4_connect`, correlates source/destination IPs against the Pod Lease Table,
+and logs enriched semantic flow identities in real time.
 
 ### API Endpoints
 
@@ -312,6 +327,12 @@ CREATE INDEX idx_flows_dest_ip ON network_flows(dest_ip);
 Kubernetes API → Pod Watcher → PodLeaseTable ↓
                                               ↓
 PostgreSQL DB → Flow Query → Flow Correlator → Topology Exporter → API Response
+```
+
+For live kernel telemetry mode, an alternate path is supported:
+
+```
+Kernel (eBPF) → Python Loader → Flow Correlator → Enriched Flow Event
 ```
 
 ### Real-time Updates

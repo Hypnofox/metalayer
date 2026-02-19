@@ -270,9 +270,9 @@ def main():
     parser = argparse.ArgumentParser(description="Kubernetes Semantic Identity Resolver")
     parser.add_argument(
         '--mode',
-        choices=['standalone', 'api'],
+        choices=['standalone', 'api', 'ebpf'],
         default='api',
-        help='Run mode: standalone (watcher only) or api (with REST API)'
+        help='Run mode: standalone (watcher only), api (with REST API), or ebpf (live kernel events)'
     )
     parser.add_argument(
         '--host',
@@ -317,6 +317,30 @@ def main():
         except KeyboardInterrupt:
             logger.info("Shutting down...")
         finally:
+            resolver.stop_watching()
+    elif args.mode == 'ebpf':
+        from correlator import FlowCorrelator
+        from probes.loader import EBPFMonitor
+
+        correlator = FlowCorrelator(resolver)
+
+        def handle_live_event(event):
+            correlated = correlator.correlate_live_event(event)
+            logger.info(
+                "eBPF flow %s:%s -> %s:%s (source=%s, dest=%s)",
+                event.get('source_ip'),
+                event.get('source_port'),
+                event.get('dest_ip'),
+                event.get('dest_port'),
+                'pod' if correlated.get('source_identity') else 'external',
+                'pod' if correlated.get('dest_identity') else 'external',
+            )
+
+        monitor = EBPFMonitor(on_event=handle_live_event)
+        try:
+            monitor.start_tracking()
+        finally:
+            monitor.stop_tracking()
             resolver.stop_watching()
     else:
         # Run standalone (watcher only)

@@ -205,3 +205,35 @@ def test_statistics():
     assert stats['pod_to_pod'] == 1
     assert stats['has_pod_endpoint'] == 2
     assert stats['external_only'] == 1
+
+
+def test_correlate_live_event():
+    """Test live eBPF event correlation."""
+    resolver = MockResolver()
+    correlator = FlowCorrelator(resolver)
+
+    event = {
+        'source_ip': '10.244.1.5',
+        'dest_ip': '10.244.2.10',
+        'source_port': 43123,
+        'dest_port': 5432,
+        'protocol': 'TCP',
+        'bytes': 0,
+        'timestamp': datetime.now(),
+    }
+
+    result = correlator.correlate_live_event(event)
+
+    assert result['source_identity'] is not None
+    assert result['dest_identity'] is not None
+    assert result['source_port'] == 43123
+    assert result['dest_port'] == 5432
+
+
+def test_correlate_live_event_missing_ips():
+    """Test validation for malformed live events."""
+    resolver = MockResolver()
+    correlator = FlowCorrelator(resolver)
+
+    with pytest.raises(ValueError):
+        correlator.correlate_live_event({'source_ip': '10.0.0.1'})
