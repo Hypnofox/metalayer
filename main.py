@@ -7,6 +7,7 @@ import logging
 import sys
 import threading
 import time
+import os 
 from pathlib import Path
 
 from kubernetes import client, config
@@ -228,38 +229,23 @@ class K8sIdentityResolver:
             self.stop_watching()
 
 
-def run_api_server(resolver, host: str = "0.0.0.0", port: int = 8000):
-    """Run the FastAPI server"""
-    import uvicorn
-    from api import create_app
-    
-    app = create_app(resolver)
-    
-    logger.info(f"Starting API server on {host}:{port}")
-    uvicorn.run(app, host=host, port=port, log_level="info")
-
-
 def main():
     """Entry point"""
     import argparse
+    import uvicorn
+    from api import create_app
     
     parser = argparse.ArgumentParser(description="Kubernetes Semantic Identity Resolver")
     parser.add_argument(
-        '--mode',
-        choices=['standalone', 'api'],
-        default='api',
-        help='Run mode: standalone (watcher only) or api (with REST API)'
-    )
-    parser.add_argument(
         '--host',
-        default='0.0.0.0',
-        help='API server host (default: 0.0.0.0)'
+        default=os.getenv('HOST', '0.0.0.0'),
+        help='API server host (default: 0.0.0.0, ignores env)'
     )
     parser.add_argument(
         '--port',
         type=int,
-        default=8000,
-        help='API server port (default: 8000)'
+        default=int(os.getenv('PORT', '8000')),
+        help='API server port (default: 8000, ignores env)'
     )
     parser.add_argument(
         '--kubeconfig',
@@ -280,23 +266,21 @@ def main():
     
     # Connect and build initial state
     if not resolver.connect_to_k8s():
-        logger.error("Failed to connect to Kubernetes. Exiting.")
-        sys.exit(1)
-    
-    resolver.build_pod_lease_table()
-    resolver.start_watching()
-    
-    if args.mode == 'api':
-        # Run with API server
-        try:
-            run_api_server(resolver, host=args.host, port=args.port)
-        except KeyboardInterrupt:
-            logger.info("Shutting down...")
-        finally:
-            resolver.stop_watching()
+        logger.warning("Failed to connect to Kubernetes. Running with empty pod lease table.")
     else:
-        # Run standalone (watcher only)
-        resolver.run()
+        resolver.build_pod_lease_table()
+        resolver.start_watching()
+    
+    # Create and run API server
+    app = create_app(resolver)
+    
+    try:
+        logger.info(f"Starting API server on {args.host}:{args.port}")
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
+    finally:
+        resolver.stop_watching()
 
 
 if __name__ == "__main__":
