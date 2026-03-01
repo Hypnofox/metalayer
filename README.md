@@ -442,3 +442,58 @@ The service exposes Prometheus metrics at `/metrics`:
 
 [Add contribution guidelines here]
 
+
+
+## PoC Deployment (Faddom server + remote OpenShift)
+
+This PoC target is a **semantic identity lookup demo** (not full flow ingestion).
+
+### 1) OpenShift restricted ServiceAccount
+Create a namespace-scoped service account and grant read-only permissions:
+
+```bash
+oc new-project metalayer-poc
+oc create serviceaccount metalayer
+oc adm policy add-cluster-role-to-user view -z metalayer -n metalayer-poc
+```
+
+Generate a kubeconfig for that service account and verify it works:
+
+```bash
+KUBECONFIG=./kubeconfig-metalayer oc get pods
+```
+
+### 2) Ensure API reachability from Faddom host
+
+```bash
+curl -k https://<openshift-api-host>:6443
+```
+
+### 3) Install and run Metalayer on Faddom host
+
+```bash
+sudo mkdir -p /opt/metalayer
+sudo dnf install -y python3 python3-venv python3-pip gcc
+
+cd /opt/metalayer
+python3 -m venv venv
+source venv/bin/activate
+pip install -U pip
+pip install -r requirements.txt
+
+python /opt/metalayer/main.py --kubeconfig /opt/metalayer/config/kubeconfig --host 0.0.0.0 --port 8000
+```
+
+### 4) Demo endpoints
+
+```bash
+curl http://<faddom-server-ip>:8000/health
+curl http://<faddom-server-ip>:8000/api/v1/pods
+curl -X POST http://<faddom-server-ip>:8000/api/v1/resolve   -H "Content-Type: application/json"   -d '{"ip":"10.244.1.5"}'
+```
+
+For batch lookup:
+
+```bash
+curl -X POST http://<faddom-server-ip>:8000/api/v1/resolve/batch   -H "Content-Type: application/json"   -d '{"ips":["10.244.1.5","192.168.1.1"]}'
+```

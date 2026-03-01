@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import ctypes
-import ipaddress
+import socket
+import struct
 import logging
 import time
 from pathlib import Path
@@ -33,7 +34,7 @@ class EBPFMonitor:
         self._bpf = None
 
     def _to_ip(self, raw: int) -> str:
-        return str(ipaddress.ip_address(raw.to_bytes(4, byteorder="little")))
+        return socket.inet_ntoa(struct.pack("!I", raw))
 
     def _handle_flow_event(self, _cpu: int, data: int, _size: int):
         event = ctypes.cast(data, ctypes.POINTER(FlowEvent)).contents
@@ -73,8 +74,6 @@ class EBPFMonitor:
 
     def stop_tracking(self):
         """Stop the eBPF listener loop."""
-        if not self._running:
-            return
         self._running = False
         # BCC detaches probes when BPF object is garbage collected.
         self._bpf = None

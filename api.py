@@ -114,6 +114,22 @@ class TopologyExportResponse(BaseModel):
     edges: List[Dict[str, Any]]
 
 
+class ResolveRequest(BaseModel):
+    """Request model for single IP identity resolution."""
+    ip: str = Field(..., description="IP address to resolve")
+
+
+class ResolveBatchRequest(BaseModel):
+    """Request model for batch identity resolution."""
+    ips: List[str] = Field(..., description="List of IP addresses to resolve")
+
+
+class ResolveResult(BaseModel):
+    """Resolved identity payload for an IP."""
+    ip: str
+    identity: Optional[PodIdentity]
+
+
 def create_app(resolver) -> FastAPI:
     """Create and configure FastAPI application"""
 
@@ -267,6 +283,41 @@ def create_app(resolver) -> FastAPI:
             )
 
         return PodIdentity(**identity)
+
+    @app.post(
+        "/api/v1/resolve",
+        response_model=ResolveResult,
+        tags=["Pods"],
+        status_code=status.HTTP_200_OK
+    )
+    async def resolve_ip(request: ResolveRequest):
+        """Resolve a single IP to Kubernetes identity."""
+        resolver_instance = app.state.resolver
+        identity = resolver_instance.lease_table.get_pod_identity(request.ip)
+        return ResolveResult(
+            ip=request.ip,
+            identity=PodIdentity(**identity) if identity else None,
+        )
+
+    @app.post(
+        "/api/v1/resolve/batch",
+        response_model=List[ResolveResult],
+        tags=["Pods"],
+        status_code=status.HTTP_200_OK
+    )
+    async def resolve_ips(request: ResolveBatchRequest):
+        """Resolve multiple IPs to Kubernetes identities."""
+        resolver_instance = app.state.resolver
+        results: List[ResolveResult] = []
+        for ip in request.ips:
+            identity = resolver_instance.lease_table.get_pod_identity(ip)
+            results.append(
+                ResolveResult(
+                    ip=ip,
+                    identity=PodIdentity(**identity) if identity else None,
+                )
+            )
+        return results
 
     def _run_topology_export(start_time: Optional[datetime], end_time: Optional[datetime], limit: Optional[int], group_by_deployment: bool) -> Dict[str, Any]:
         db_connector = get_db_connector()

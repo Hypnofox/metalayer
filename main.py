@@ -302,15 +302,14 @@ def main():
     # Create resolver instance
     resolver = K8sIdentityResolver(kubeconfig_path=args.kubeconfig)
 
-    # Connect and build initial state
-    if not resolver.connect_to_k8s():
-        logger.error("Failed to connect to Kubernetes. Exiting.")
-        sys.exit(1)
-
-    resolver.build_pod_lease_table()
-    resolver.start_watching()
-
     if args.mode == 'api':
+        # Connect and build initial state
+        if not resolver.connect_to_k8s():
+            logger.error("Failed to connect to Kubernetes. Exiting.")
+            sys.exit(1)
+
+        resolver.build_pod_lease_table()
+        resolver.start_watching()
         # Run with API server
         try:
             run_api_server(resolver, host=args.host, port=args.port)
@@ -321,6 +320,14 @@ def main():
     elif args.mode == 'ebpf':
         from correlator import FlowCorrelator
         from probes.loader import EBPFMonitor
+
+        # Connect and build initial state
+        if not resolver.connect_to_k8s():
+            logger.error("Failed to connect to Kubernetes. Exiting.")
+            sys.exit(1)
+
+        resolver.build_pod_lease_table()
+        resolver.start_watching()
 
         correlator = FlowCorrelator(resolver)
 
