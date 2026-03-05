@@ -45,6 +45,9 @@ metalayer/
 ├── .env.example         # Example environment configuration
 ├── config/             # Configuration directory
 │   └── kubeconfig      # (Optional) Custom Kubernetes config
+├── probes/             # eBPF probe module (optional live mode)
+│   ├── network_monitor.bpf.c  # Kernel probe for tcp_v4_connect
+│   └── loader.py       # BCC loader for streaming kernel events
 ├── tests/              # Unit tests
 │   ├── test_api.py     # API endpoint tests
 │   ├── test_correlator.py  # Flow correlation tests
@@ -98,6 +101,18 @@ The API server will be available at `http://localhost:8000` with interactive doc
 # Run without API server
 python main.py --mode standalone
 ```
+
+
+### Running in eBPF Live Mode (Optional)
+
+```bash
+# Requires BCC tooling and kernel eBPF support
+python main.py --mode ebpf
+```
+
+In this mode the service listens to live connection events from an eBPF kprobe
+on `tcp_v4_connect`, correlates source/destination IPs against the Pod Lease Table,
+and logs enriched semantic flow identities in real time.
 
 ### API Endpoints
 
@@ -314,6 +329,12 @@ Kubernetes API → Pod Watcher → PodLeaseTable ↓
 PostgreSQL DB → Flow Query → Flow Correlator → Topology Exporter → API Response
 ```
 
+For live kernel telemetry mode, an alternate path is supported:
+
+```
+Kernel (eBPF) → Python Loader → Flow Correlator → Enriched Flow Event
+```
+
 ### Real-time Updates
 
 The service uses Kubernetes watch API to receive real-time notifications:
@@ -421,3 +442,58 @@ The service exposes Prometheus metrics at `/metrics`:
 
 [Add contribution guidelines here]
 
+
+
+## PoC Deployment (Faddom server + remote OpenShift)
+
+This PoC target is a **semantic identity lookup demo** (not full flow ingestion).
+
+### 1) OpenShift restricted ServiceAccount
+Create a namespace-scoped service account and grant read-only permissions:
+
+```bash
+oc new-project metalayer-poc
+oc create serviceaccount metalayer
+oc adm policy add-cluster-role-to-user view -z metalayer -n metalayer-poc
+```
+
+Generate a kubeconfig for that service account and verify it works:
+
+```bash
+KUBECONFIG=./kubeconfig-metalayer oc get pods
+```
+
+### 2) Ensure API reachability from Faddom host
+
+```bash
+curl -k https://<openshift-api-host>:6443
+```
+
+### 3) Install and run Metalayer on Faddom host
+
+```bash
+sudo mkdir -p /opt/metalayer
+sudo dnf install -y python3 python3-venv python3-pip gcc
+
+cd /opt/metalayer
+python3 -m venv venv
+source venv/bin/activate
+pip install -U pip
+pip install -r requirements.txt
+
+python /opt/metalayer/main.py --kubeconfig /opt/metalayer/config/kubeconfig --host 0.0.0.0 --port 8000
+```
+
+### 4) Demo endpoints
+
+```bash
+curl http://<faddom-server-ip>:8000/health
+curl http://<faddom-server-ip>:8000/api/v1/pods
+curl -X POST http://<faddom-server-ip>:8000/api/v1/resolve   -H "Content-Type: application/json"   -d '{"ip":"10.244.1.5"}'
+```
+
+For batch lookup:
+
+```bash
+curl -X POST http://<faddom-server-ip>:8000/api/v1/resolve/batch   -H "Content-Type: application/json"   -d '{"ips":["10.244.1.5","192.168.1.1"]}'
+```

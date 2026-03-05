@@ -131,7 +131,7 @@ class TestWatcherLifecycle:
         # Give thread time to stop
         time.sleep(0.5)
         
-        assert not resolver._watch_thread.is_alive() or resolver._watch_thread is None
+        assert resolver._watch_thread is None or not resolver._watch_thread.is_alive()
     
     def test_start_watching_twice(self, resolver):
         """Test that starting watcher twice doesn't create duplicate threads"""

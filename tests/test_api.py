@@ -174,3 +174,32 @@ class TestMetrics:
         # Check for expected metrics
         content = response.text
         assert 'api_requests_total' in content or 'python_info' in content
+
+
+class TestResolveEndpoints:
+    """Tests for resolve endpoints"""
+
+    def test_resolve_single_found(self, client):
+        response = client.post("/api/v1/resolve", json={"ip": "10.244.1.5"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data['ip'] == '10.244.1.5'
+        assert data['identity'] is not None
+        assert data['identity']['name'] == 'test-pod-1'
+
+    def test_resolve_single_not_found(self, client):
+        response = client.post("/api/v1/resolve", json={"ip": "192.168.1.10"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data['ip'] == '192.168.1.10'
+        assert data['identity'] is None
+
+    def test_resolve_batch(self, client):
+        response = client.post("/api/v1/resolve/batch", json={"ips": ["10.244.1.5", "192.168.1.10"]})
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 2
+        assert data[0]['ip'] == '10.244.1.5'
+        assert data[0]['identity'] is not None
+        assert data[1]['ip'] == '192.168.1.10'
+        assert data[1]['identity'] is None

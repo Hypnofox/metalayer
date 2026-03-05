@@ -3,9 +3,10 @@
 Kubernetes Semantic Identity Resolver
 Main entry point for the microservice
 """
-import asyncio
 import logging
+import random
 import sys
+import threading
 from pathlib import Path
 
 from kubernetes import client, config
@@ -24,41 +25,47 @@ logger = logging.getLogger(__name__)
 
 class PodLeaseTable:
     """Manages the mapping of pod IPs to their Kubernetes identities"""
-    
+
     def __init__(self):
         self.pod_ip_map = {}
+        self._lock = threading.RLock()
         logger.info("Initialized Pod Lease Table")
-    
+
     def update_pod(self, pod_ip: str, pod_metadata: dict):
         """Update or add a pod entry in the lease table"""
-        self.pod_ip_map[pod_ip] = pod_metadata
+        with self._lock:
+            self.pod_ip_map[pod_ip] = pod_metadata
         logger.debug(f"Updated pod entry for IP {pod_ip}")
-    
+
     def remove_pod(self, pod_ip: str):
         """Remove a pod entry from the lease table"""
-        if pod_ip in self.pod_ip_map:
-            del self.pod_ip_map[pod_ip]
-            logger.debug(f"Removed pod entry for IP {pod_ip}")
-    
+        with self._lock:
+            if pod_ip in self.pod_ip_map:
+                del self.pod_ip_map[pod_ip]
+                logger.debug(f"Removed pod entry for IP {pod_ip}")
+
     def get_pod_identity(self, pod_ip: str) -> dict:
         """Retrieve pod identity by IP address"""
-        return self.pod_ip_map.get(pod_ip)
-    
+        with self._lock:
+            return self.pod_ip_map.get(pod_ip)
+
     def get_all_pods(self) -> dict:
         """Get all pod mappings"""
-        return self.pod_ip_map.copy()
+        with self._lock:
+            return self.pod_ip_map.copy()
 
 
 class K8sIdentityResolver:
     """Main resolver class for Kubernetes semantic identities"""
-    
+
     def __init__(self, kubeconfig_path: str = None):
         self.kubeconfig_path = kubeconfig_path
         self.lease_table = PodLeaseTable()
         self.v1_api = None
         self._watch_thread = None
         self._shutdown_event = None
-        
+        self._resource_version = None
+
     def connect_to_k8s(self):
         """Establish connection to Kubernetes API"""
         try:
@@ -73,33 +80,34 @@ class K8sIdentityResolver:
                 except config.ConfigException:
                     config.load_kube_config()
                     logger.info("Loaded default kubeconfig")
-            
+
             self.v1_api = client.CoreV1Api()
             logger.info("Successfully connected to Kubernetes API")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to connect to Kubernetes API: {e}")
             return False
-    
+
     def build_pod_lease_table(self):
         """Build the initial pod lease table from current cluster state"""
         try:
             logger.info("Building pod lease table...")
             pods = self.v1_api.list_pod_for_all_namespaces(watch=False)
-            
+            self._resource_version = getattr(getattr(pods, 'metadata', None), 'resource_version', None)
+
             for pod in pods.items:
                 if pod.status.pod_ip:
                     pod_metadata = self._extract_pod_metadata(pod)
                     self.lease_table.update_pod(pod.status.pod_ip, pod_metadata)
-            
+
             logger.info(f"Built pod lease table with {len(self.lease_table.get_all_pods())} entries")
-            
+
         except ApiException as e:
             logger.error(f"Kubernetes API error while building lease table: {e}")
         except Exception as e:
             logger.error(f"Error building pod lease table: {e}")
-    
+
     def _extract_pod_metadata(self, pod) -> dict:
         """Extract relevant metadata from a pod object"""
         return {
@@ -111,69 +119,87 @@ class K8sIdentityResolver:
             'service_account': pod.spec.service_account_name,
             'phase': pod.status.phase
         }
-    
+
     def _watch_pods(self, shutdown_event):
         """Watch for pod changes and update lease table in real-time"""
         from kubernetes import watch
-        
+
         logger.info("Starting pod watcher...")
         w = watch.Watch()
-        
+        reconnect_backoff_seconds = 1
+
         while not shutdown_event.is_set():
             try:
-                # Watch pod events across all namespaces
+                stream_kwargs = {
+                    'timeout_seconds': 60,
+                }
+                if self._resource_version:
+                    stream_kwargs['resource_version'] = self._resource_version
+
                 for event in w.stream(
                     self.v1_api.list_pod_for_all_namespaces,
-                    timeout_seconds=60
+                    **stream_kwargs,
                 ):
                     if shutdown_event.is_set():
                         break
-                    
+
+                    reconnect_backoff_seconds = 1
                     event_type = event['type']
                     pod = event['object']
                     pod_ip = pod.status.pod_ip
-                    
+                    self._resource_version = getattr(pod.metadata, 'resource_version', self._resource_version)
+
                     if event_type == 'ADDED':
                         if pod_ip:
                             pod_metadata = self._extract_pod_metadata(pod)
                             self.lease_table.update_pod(pod_ip, pod_metadata)
                             logger.info(f"Added pod {pod.metadata.namespace}/{pod.metadata.name} with IP {pod_ip}")
-                    
+
                     elif event_type == 'MODIFIED':
                         if pod_ip:
                             pod_metadata = self._extract_pod_metadata(pod)
                             self.lease_table.update_pod(pod_ip, pod_metadata)
                             logger.debug(f"Updated pod {pod.metadata.namespace}/{pod.metadata.name} with IP {pod_ip}")
-                    
+
                     elif event_type == 'DELETED':
                         if pod_ip:
                             self.lease_table.remove_pod(pod_ip)
                             logger.info(f"Removed pod {pod.metadata.namespace}/{pod.metadata.name} with IP {pod_ip}")
-                
+
             except ApiException as e:
                 if shutdown_event.is_set():
                     break
+
+                # 410 Gone means watch resource version expired; rebuild full snapshot and resume.
+                if getattr(e, 'status', None) == 410:
+                    logger.warning("Watch resource version expired; rebuilding pod lease table")
+                    self.build_pod_lease_table()
+                    reconnect_backoff_seconds = 1
+                    continue
+
+                sleep_time = min(reconnect_backoff_seconds, 30) + random.uniform(0, 1)
                 logger.error(f"Kubernetes API error in watch: {e}")
-                logger.info("Reconnecting watch in 5 seconds...")
-                shutdown_event.wait(5)
-                
+                logger.info(f"Reconnecting watch in {sleep_time:.1f} seconds...")
+                shutdown_event.wait(sleep_time)
+                reconnect_backoff_seconds = min(reconnect_backoff_seconds * 2, 30)
+
             except Exception as e:
                 if shutdown_event.is_set():
                     break
+                sleep_time = min(reconnect_backoff_seconds, 30) + random.uniform(0, 1)
                 logger.error(f"Error in pod watch: {e}")
-                logger.info("Reconnecting watch in 5 seconds...")
-                shutdown_event.wait(5)
-        
+                logger.info(f"Reconnecting watch in {sleep_time:.1f} seconds...")
+                shutdown_event.wait(sleep_time)
+                reconnect_backoff_seconds = min(reconnect_backoff_seconds * 2, 30)
+
         logger.info("Pod watcher stopped")
-    
+
     def start_watching(self):
         """Start the pod watching thread"""
-        import threading
-        
-        if self._watch_thread is not None:
+        if self._watch_thread is not None and self._watch_thread.is_alive():
             logger.warning("Pod watcher already running")
             return
-        
+
         self._shutdown_event = threading.Event()
         self._watch_thread = threading.Thread(
             target=self._watch_pods,
@@ -182,7 +208,7 @@ class K8sIdentityResolver:
         )
         self._watch_thread.start()
         logger.info("Pod watcher thread started")
-    
+
     def stop_watching(self):
         """Stop the pod watching thread"""
         if self._shutdown_event:
@@ -190,8 +216,9 @@ class K8sIdentityResolver:
         if self._watch_thread:
             self._watch_thread.join(timeout=5)
             self._watch_thread = None
+        self._shutdown_event = None
         logger.info("Pod watcher stopped")
-    
+
     def correlate_flow(self, source_ip: str, dest_ip: str) -> dict:
         """Correlate a network flow with pod identities"""
         result = {
@@ -201,24 +228,24 @@ class K8sIdentityResolver:
             'destination_identity': self.lease_table.get_pod_identity(dest_ip)
         }
         return result
-    
+
     def run(self):
         """Main run loop"""
         logger.info("Starting Kubernetes Semantic Identity Resolver...")
-        
+
         if not self.connect_to_k8s():
             logger.error("Failed to connect to Kubernetes. Exiting.")
             sys.exit(1)
-        
+
         self.build_pod_lease_table()
         self.start_watching()
-        
+
         logger.info("Identity resolver is running. Press Ctrl+C to stop.")
-        
+
         try:
             # Keep the service running
+            import time
             while True:
-                import time
                 time.sleep(60)
         except KeyboardInterrupt:
             logger.info("Shutting down...")
@@ -229,9 +256,9 @@ def run_api_server(resolver, host: str = "0.0.0.0", port: int = 8000):
     """Run the FastAPI server"""
     import uvicorn
     from api import create_app
-    
+
     app = create_app(resolver)
-    
+
     logger.info(f"Starting API server on {host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="info")
 
@@ -239,13 +266,13 @@ def run_api_server(resolver, host: str = "0.0.0.0", port: int = 8000):
 def main():
     """Entry point"""
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="Kubernetes Semantic Identity Resolver")
     parser.add_argument(
         '--mode',
-        choices=['standalone', 'api'],
+        choices=['standalone', 'api', 'ebpf'],
         default='api',
-        help='Run mode: standalone (watcher only) or api (with REST API)'
+        help='Run mode: standalone (watcher only), api (with REST API), or ebpf (live kernel events)'
     )
     parser.add_argument(
         '--host',
@@ -262,34 +289,65 @@ def main():
         '--kubeconfig',
         help='Path to kubeconfig file'
     )
-    
+
     args = parser.parse_args()
-    
+
     # Check for custom kubeconfig path
     if not args.kubeconfig:
         config_dir = Path(__file__).parent / "config"
         kubeconfig_path = config_dir / "kubeconfig"
         if kubeconfig_path.exists():
             args.kubeconfig = str(kubeconfig_path)
-    
+
     # Create resolver instance
     resolver = K8sIdentityResolver(kubeconfig_path=args.kubeconfig)
-    
-    # Connect and build initial state
-    if not resolver.connect_to_k8s():
-        logger.error("Failed to connect to Kubernetes. Exiting.")
-        sys.exit(1)
-    
-    resolver.build_pod_lease_table()
-    resolver.start_watching()
-    
+
     if args.mode == 'api':
+        # Connect and build initial state
+        if not resolver.connect_to_k8s():
+            logger.error("Failed to connect to Kubernetes. Exiting.")
+            sys.exit(1)
+
+        resolver.build_pod_lease_table()
+        resolver.start_watching()
         # Run with API server
         try:
             run_api_server(resolver, host=args.host, port=args.port)
         except KeyboardInterrupt:
             logger.info("Shutting down...")
         finally:
+            resolver.stop_watching()
+    elif args.mode == 'ebpf':
+        from correlator import FlowCorrelator
+        from probes.loader import EBPFMonitor
+
+        # Connect and build initial state
+        if not resolver.connect_to_k8s():
+            logger.error("Failed to connect to Kubernetes. Exiting.")
+            sys.exit(1)
+
+        resolver.build_pod_lease_table()
+        resolver.start_watching()
+
+        correlator = FlowCorrelator(resolver)
+
+        def handle_live_event(event):
+            correlated = correlator.correlate_live_event(event)
+            logger.info(
+                "eBPF flow %s:%s -> %s:%s (source=%s, dest=%s)",
+                event.get('source_ip'),
+                event.get('source_port'),
+                event.get('dest_ip'),
+                event.get('dest_port'),
+                'pod' if correlated.get('source_identity') else 'external',
+                'pod' if correlated.get('dest_identity') else 'external',
+            )
+
+        monitor = EBPFMonitor(on_event=handle_live_event)
+        try:
+            monitor.start_tracking()
+        finally:
+            monitor.stop_tracking()
             resolver.stop_watching()
     else:
         # Run standalone (watcher only)
@@ -298,4 +356,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

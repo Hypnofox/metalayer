@@ -8,8 +8,9 @@ from typing import List, Dict, Optional, Any
 from datetime import datetime
 from contextlib import contextmanager
 from pathlib import Path
+
 import psycopg2
-from psycopg2 import pool, extras
+from psycopg2 import extras
 from dotenv import load_dotenv
 
 # Load environment variables from .env file in project root
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 class DatabaseConfig:
     """Database configuration from environment variables"""
-    
+
     def __init__(self):
         self.host = os.getenv('DB_HOST', 'localhost')
         self.port = int(os.getenv('DB_PORT', '5432'))
@@ -31,7 +32,8 @@ class DatabaseConfig:
         self.min_connections = int(os.getenv('DB_MIN_CONN', '1'))
         self.max_connections = int(os.getenv('DB_MAX_CONN', '10'))
         self.flow_table = os.getenv('DB_FLOW_TABLE', 'tbl_network_topology')
-    
+        self.fetch_size = int(os.getenv('DB_FETCH_SIZE', '1000'))
+
     def get_connection_params(self) -> dict:
         """Get connection parameters as dictionary"""
         return {
@@ -45,12 +47,12 @@ class DatabaseConfig:
 
 class DatabaseConnector:
     """PostgreSQL database connector with connection pooling"""
-    
+
     def __init__(self, config: Optional[DatabaseConfig] = None):
         self.config = config or DatabaseConfig()
         self.connection_pool = None
         self._initialize_pool()
-    
+
     def _initialize_pool(self):
         """Initialize the connection pool"""
         try:
@@ -66,7 +68,7 @@ class DatabaseConnector:
         except Exception as e:
             logger.error(f"Failed to initialize database connection pool: {e}")
             raise
-    
+
     @contextmanager
     def get_connection(self):
         """Context manager for database connections"""
@@ -82,7 +84,7 @@ class DatabaseConnector:
         finally:
             if conn:
                 self.connection_pool.putconn(conn)
-    
+
     def query_flows(
         self,
         start_time: Optional[datetime] = None,
@@ -90,65 +92,62 @@ class DatabaseConnector:
         limit: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
-        Query network flows from the database
-        
-        Args:
-            start_time: Start of time range (optional)
-            end_time: End of time range (optional)
-            limit: Maximum number of flows to return (optional)
-        
-        Returns:
-            List of flow dictionaries with keys: 
-            - source: source IP address
-            - target: destination IP address
-            - port: destination port
-            - last_seen_at: timestamp when flow was last seen
-            - protocol: IP protocol number
-            - request_bytes: bytes sent from source
-            - response_bytes: bytes sent from target
+        Query network flows from the database.
+
+        Returns normalized flow dictionaries with keys expected by the correlator:
+        - source_ip
+        - dest_ip
+        - timestamp
+        - protocol
+        - bytes
         """
         query = f"""
-            SELECT 
-                source,
-                target,
-                port,
-                last_seen_at,
+            SELECT
+                source AS source_ip,
+                target AS dest_ip,
+                last_seen_at AS timestamp,
                 protocol,
-                request_bytes,
-                response_bytes
+                (COALESCE(request_bytes, 0) + COALESCE(response_bytes, 0)) AS bytes
             FROM {self.config.flow_table}
         """
-        
+
         params = []
         conditions = []
-        
+
         if start_time:
             conditions.append("last_seen_at >= %s")
             params.append(start_time)
-        
+
         if end_time:
             conditions.append("last_seen_at <= %s")
             params.append(end_time)
-        
+
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
-        
+
         query += " ORDER BY last_seen_at DESC"
-        
+
         if limit:
-            query += f" LIMIT {limit}"
-        
+            query += f" LIMIT {int(limit)}"
+
         try:
+            flows: List[Dict[str, Any]] = []
             with self.get_connection() as conn:
                 with conn.cursor(cursor_factory=extras.RealDictCursor) as cursor:
                     cursor.execute(query, params)
-                    flows = cursor.fetchall()
+
+                    while True:
+                        batch = cursor.fetchmany(self.config.fetch_size)
+                        if not batch:
+                            break
+                        flows.extend(dict(row) for row in batch)
+
                     logger.info(f"Retrieved {len(flows)} flows from database")
-                    return [dict(flow) for flow in flows]
+                    return flows
         except Exception as e:
             logger.error(f"Error querying flows: {e}")
             raise
-    
+
     def test_connection(self) -> bool:
         """Test database connectivity"""
         try:
@@ -161,7 +160,7 @@ class DatabaseConnector:
         except Exception as e:
             logger.error(f"Database connection test failed: {e}")
             return False
-    
+
     def close(self):
         """Close all connections in the pool"""
         if self.connection_pool:

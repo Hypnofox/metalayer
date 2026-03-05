@@ -190,6 +190,31 @@ class FlowCorrelator:
         
         return enriched
     
+
+    def correlate_live_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Correlate an eBPF live event with pod identities."""
+        source_ip = event.get('source_ip')
+        dest_ip = event.get('dest_ip')
+        if not source_ip or not dest_ip:
+            raise ValueError("Live event must include source_ip and dest_ip")
+
+        timestamp = event.get('timestamp', datetime.utcnow())
+        protocol = event.get('protocol', 'TCP')
+        bytes_total = event.get('bytes', 0)
+
+        correlated = self.correlate_flow(
+            source_ip=source_ip,
+            dest_ip=dest_ip,
+            timestamp=timestamp,
+            protocol=protocol,
+            bytes=bytes_total,
+        )
+
+        payload = correlated.to_dict()
+        payload['source_port'] = event.get('source_port')
+        payload['dest_port'] = event.get('dest_port')
+        return payload
+
     def get_statistics(self, correlated_flows: List[CorrelatedFlow]) -> Dict[str, Any]:
         """
         Get statistics about correlated flows
