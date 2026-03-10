@@ -3,6 +3,8 @@ FROM python:3.12-slim
 # Create a non-root user
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 # Install runtime dependencies

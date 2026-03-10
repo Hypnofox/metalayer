@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metalayer
+  labels:
+    app: metalayer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metalayer
+  template:
+    metadata:
+      labels:
+        app: metalayer
+    spec:
+      containers:
+      - name: metalayer
+        image: metalayer:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+        envFrom:
+        - configMapRef:
+            name: metalayer-config
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5

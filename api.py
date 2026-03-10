@@ -75,9 +75,12 @@ class FlowCorrelationResponse(BaseModel):
 class HealthResponse(BaseModel):
     """Health check response"""
     status: str
-    kubernetes_connected: bool
-    pods_tracked: int
-    uptime_seconds: float
+
+
+class ReadyResponse(BaseModel):
+    """Readiness check response"""
+    status: str
+    k8s: Optional[str] = None
 
 
 class PodListResponse(BaseModel):
@@ -164,12 +167,28 @@ def create_app(resolver) -> FastAPI:
     async def health_check():
         """Stateless health check endpoint"""
         # A simple response that does not depend on DB or K8s
-        return HealthResponse(
-            status="ok",
-            kubernetes_connected=True, # Dummy values to satisfy the model without breaking existing clients
-            pods_tracked=0,
-            uptime_seconds=0.0
-        )
+        return HealthResponse(status="ok")
+    
+    @app.get("/ready", response_model=ReadyResponse, tags=["Health"])
+    async def readiness_check():
+        """Readiness check endpoint"""
+        resolver = app.state.resolver
+        # If connect_to_k8s failed at startup (e.g. no config), v1_api will be None.
+        if resolver.v1_api is None:
+            return ReadyResponse(status="ready", k8s="disconnected")
+        
+        # If it was connected, optionally ensure watcher is running.
+        if resolver._watch_thread and resolver._watch_thread.is_alive():
+            return ReadyResponse(status="ready", k8s="connected")
+        elif resolver._watch_thread and not resolver._watch_thread.is_alive():
+            # Connection was made but watch thread died, so we should fail readiness
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Kubernetes API is connected but watcher thread is not alive"
+            )
+        
+        # Fallback if watcher hasn't initialized yet
+        return ReadyResponse(status="ready", k8s="connected")
     
     @app.get("/metrics", tags=["Metrics"])
     async def metrics():

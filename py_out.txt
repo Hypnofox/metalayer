@@ -1,0 +1,8 @@
+starting...
+main imported
+Traceback (most recent call last):
+  File "/home/egor@corp.faddom.com/metalayer/test_import.py", line 5, in <module>
+    import db
+  File "/home/egor@corp.faddom.com/metalayer/db.py", line 11, in <module>
+    import psycopg2
+ModuleNotFoundError: No module named 'psycopg2'

@@ -347,49 +347,27 @@ The main components are organized as:
 
 ### Docker
 
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-CMD ["python", "main.py", "--mode", "api", "--host", "0.0.0.0", "--port", "8000"]
+Build and run the container using the Makefile:
+```bash
+make docker-build
+make docker-run
 ```
 
-### Kubernetes
+### OpenShift
 
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: identity-resolver
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: identity-resolver
-  template:
-    metadata:
-      labels:
-        app: identity-resolver
-    spec:
-      serviceAccountName: identity-resolver
-      containers:
-      - name: resolver
-        image: identity-resolver:latest
-        ports:
-        - containerPort: 8000
-        args:
-        - "--mode"
-        - "api"
-        - "--host"
-        - "0.0.0.0"
-        - "--port"
-        - "8000"
+We provide a complete set of OpenShift manifests in the `openshift/` directory. These manifests define a Deployment, Service, Route, and ConfigMap.
+
+To deploy to OpenShift:
+
+1. Ensure you are logged into your OpenShift cluster (`oc login ...`).
+2. Make sure the `metalayer:latest` image is available in your cluster or update the `image:` property in `openshift/deployment.yaml` to point to your registry.
+3. Apply the manifests:
+
+```bash
+oc apply -f openshift/
 ```
+
+This will deploy the application, configure probes to use the `/health` and `/ready` endpoints, and make the application accessible via a Route.
 
 ## Requirements
 

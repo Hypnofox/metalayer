@@ -66,10 +66,45 @@ class TestHealthEndpoint:
         assert response.status_code == 200
         
         data = response.json()
-        assert data['status'] == 'healthy'
-        assert data['kubernetes_connected'] is True
-        assert data['pods_tracked'] == 2
-        assert 'uptime_seconds' in data
+        assert data['status'] == 'ok'
+
+
+class TestReadyEndpoint:
+    """Tests for ready check endpoint"""
+
+    def test_ready_check_k8s_disconnected(self, client, mock_resolver):
+        """Test readiness when K8s failed to connect at startup"""
+        mock_resolver.v1_api = None
+        response = client.get("/ready")
+        assert response.status_code == 200
+        data = response.json()
+        assert data['status'] == 'ready'
+        assert data['k8s'] == 'disconnected'
+
+    def test_ready_check_k8s_connected_watcher_alive(self, client, mock_resolver):
+        """Test readiness when K8s is connected and watcher is running"""
+        mock_resolver.v1_api = MagicMock()
+        mock_watcher = MagicMock()
+        mock_watcher.is_alive.return_value = True
+        mock_resolver._watch_thread = mock_watcher
+        
+        response = client.get("/ready")
+        assert response.status_code == 200
+        data = response.json()
+        assert data['status'] == 'ready'
+        assert data['k8s'] == 'connected'
+
+    def test_ready_check_k8s_connected_watcher_dead(self, client, mock_resolver):
+        """Test readiness fails when K8s is connected but watcher died"""
+        mock_resolver.v1_api = MagicMock()
+        mock_watcher = MagicMock()
+        mock_watcher.is_alive.return_value = False
+        mock_resolver._watch_thread = mock_watcher
+        
+        response = client.get("/ready")
+        assert response.status_code == 503
+        data = response.json()
+        assert "watcher thread is not alive" in data['detail']
 
 
 class TestFlowCorrelation:

@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metalayer-config
+data:
+  PORT: "8000"
+  HOST: "0.0.0.0"
+  LOG_LEVEL: "info"
+  CORS_ORIGINS: "*"
