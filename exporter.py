@@ -3,7 +3,7 @@ Topology Exporter
 Generates Faddom-compatible topology JSON from correlated flows
 """
 import logging
-from typing import Dict, List, Any, Optional, Set
+from typing import Dict, List, Any, Optional
 from datetime import datetime
 from collections import defaultdict
 from correlator import CorrelatedFlow

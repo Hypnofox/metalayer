@@ -4,6 +4,7 @@ Provides connection management and flow query functionality
 """
 import os
 import logging
+import threading
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 from contextlib import contextmanager
@@ -136,7 +137,8 @@ class DatabaseConnector:
         query += " ORDER BY last_seen_at DESC"
         
         if limit:
-            query += f" LIMIT {limit}"
+            query += " LIMIT %s"
+            params.append(limit)
         
         try:
             with self.get_connection() as conn:
@@ -171,13 +173,16 @@ class DatabaseConnector:
 
 # Singleton instance
 _db_connector: Optional[DatabaseConnector] = None
+_db_lock = threading.Lock()
 
 
 def get_db_connector() -> DatabaseConnector:
     """Get or create the database connector singleton"""
     global _db_connector
     if _db_connector is None:
-        _db_connector = DatabaseConnector()
+        with _db_lock:
+            if _db_connector is None:
+                _db_connector = DatabaseConnector()
     return _db_connector
 
 
