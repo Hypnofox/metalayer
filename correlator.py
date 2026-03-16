@@ -137,11 +137,11 @@ class FlowCorrelator:
         for flow in flows:
             try:
                 correlated = self.correlate_flow(
-                    source_ip=flow['source_ip'],
-                    dest_ip=flow['dest_ip'],
-                    timestamp=flow['timestamp'],
+                    source_ip=flow['source'],
+                    dest_ip=flow['target'],
+                    timestamp=flow['last_seen_at'],
                     protocol=flow.get('protocol', 'TCP'),
-                    bytes=flow.get('bytes', 0)
+                    bytes=flow.get('request_bytes', 0) + flow.get('response_bytes', 0)
                 )
                 correlated_flows.append(correlated)
             except Exception as e:
@@ -201,8 +201,14 @@ class FlowCorrelator:
             Dictionary with statistics
         """
         total = len(correlated_flows)
-        pod_to_pod = sum(1 for f in correlated_flows if f.is_pod_to_pod())
-        has_pod = sum(1 for f in correlated_flows if f.has_pod_endpoint())
+        pod_to_pod = 0
+        has_pod = 0
+        for f in correlated_flows:
+            if f.is_pod_to_pod():
+                pod_to_pod += 1
+                has_pod += 1
+            elif f.has_pod_endpoint():
+                has_pod += 1
         external_only = total - has_pod
         
         return {

@@ -3,9 +3,10 @@
 Kubernetes Semantic Identity Resolver
 Main entry point for the microservice
 """
-import asyncio
 import logging
 import sys
+import threading
+import time
 from pathlib import Path
 
 from kubernetes import client, config
@@ -24,29 +25,33 @@ logger = logging.getLogger(__name__)
 
 class PodLeaseTable:
     """Manages the mapping of pod IPs to their Kubernetes identities"""
-    
+
     def __init__(self):
         self.pod_ip_map = {}
+        self._lock = threading.Lock()
         logger.info("Initialized Pod Lease Table")
-    
+
     def update_pod(self, pod_ip: str, pod_metadata: dict):
         """Update or add a pod entry in the lease table"""
-        self.pod_ip_map[pod_ip] = pod_metadata
+        with self._lock:
+            self.pod_ip_map[pod_ip] = pod_metadata
         logger.debug(f"Updated pod entry for IP {pod_ip}")
-    
+
     def remove_pod(self, pod_ip: str):
         """Remove a pod entry from the lease table"""
-        if pod_ip in self.pod_ip_map:
-            del self.pod_ip_map[pod_ip]
-            logger.debug(f"Removed pod entry for IP {pod_ip}")
-    
+        with self._lock:
+            self.pod_ip_map.pop(pod_ip, None)
+        logger.debug(f"Removed pod entry for IP {pod_ip}")
+
     def get_pod_identity(self, pod_ip: str) -> dict:
         """Retrieve pod identity by IP address"""
-        return self.pod_ip_map.get(pod_ip)
-    
+        with self._lock:
+            return self.pod_ip_map.get(pod_ip)
+
     def get_all_pods(self) -> dict:
         """Get all pod mappings"""
-        return self.pod_ip_map.copy()
+        with self._lock:
+            return dict(self.pod_ip_map)
 
 
 class K8sIdentityResolver:
@@ -133,18 +138,13 @@ class K8sIdentityResolver:
                     pod = event['object']
                     pod_ip = pod.status.pod_ip
                     
-                    if event_type == 'ADDED':
+                    if event_type in ('ADDED', 'MODIFIED'):
                         if pod_ip:
                             pod_metadata = self._extract_pod_metadata(pod)
                             self.lease_table.update_pod(pod_ip, pod_metadata)
-                            logger.info(f"Added pod {pod.metadata.namespace}/{pod.metadata.name} with IP {pod_ip}")
-                    
-                    elif event_type == 'MODIFIED':
-                        if pod_ip:
-                            pod_metadata = self._extract_pod_metadata(pod)
-                            self.lease_table.update_pod(pod_ip, pod_metadata)
-                            logger.debug(f"Updated pod {pod.metadata.namespace}/{pod.metadata.name} with IP {pod_ip}")
-                    
+                            log = logger.info if event_type == 'ADDED' else logger.debug
+                            log(f"{'Added' if event_type == 'ADDED' else 'Updated'} pod {pod.metadata.namespace}/{pod.metadata.name} with IP {pod_ip}")
+
                     elif event_type == 'DELETED':
                         if pod_ip:
                             self.lease_table.remove_pod(pod_ip)
@@ -168,8 +168,6 @@ class K8sIdentityResolver:
     
     def start_watching(self):
         """Start the pod watching thread"""
-        import threading
-        
         if self._watch_thread is not None:
             logger.warning("Pod watcher already running")
             return
@@ -218,7 +216,6 @@ class K8sIdentityResolver:
         try:
             # Keep the service running
             while True:
-                import time
                 time.sleep(60)
         except KeyboardInterrupt:
             logger.info("Shutting down...")
@@ -227,7 +224,7 @@ class K8sIdentityResolver:
 
 def run_api_server(resolver, host: str = "0.0.0.0", port: int = 8000):
     """Run the FastAPI server"""
-    import uvicorn
+    import uvicorn  # noqa: PLC0415 – optional heavy dependency
     from api import create_app
     
     app = create_app(resolver)
@@ -238,7 +235,7 @@ def run_api_server(resolver, host: str = "0.0.0.0", port: int = 8000):
 
 def main():
     """Entry point"""
-    import argparse
+    import argparse  # noqa: PLC0415
     
     parser = argparse.ArgumentParser(description="Kubernetes Semantic Identity Resolver")
     parser.add_argument(

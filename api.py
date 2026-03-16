@@ -9,6 +9,7 @@ from typing import Optional, Dict, List, Any
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from fastapi.responses import Response
 import logging
+import os
 import time
 from datetime import datetime
 from db import get_db_connector
@@ -109,9 +110,20 @@ class TopologyExportResponse(BaseModel):
     edges: List[Dict[str, Any]]
 
 
+def _parse_iso_datetime(value: str, field_name: str) -> datetime:
+    """Parse an ISO-8601 datetime string, accepting trailing Z."""
+    try:
+        return datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid {field_name} format: {e}"
+        )
+
+
 def create_app(resolver) -> FastAPI:
     """Create and configure FastAPI application"""
-    
+
     app = FastAPI(
         title="Kubernetes Semantic Identity Resolver API",
         description="REST API for correlating network flows with Kubernetes pod identities",
@@ -120,18 +132,21 @@ def create_app(resolver) -> FastAPI:
         redoc_url="/redoc"
     )
     
-    # CORS middleware
+    # CORS middleware - allow_credentials requires explicit origins (not "*")
+    cors_origins = os.getenv("CORS_ORIGINS", "").split(",")
+    allow_origins = [o.strip() for o in cors_origins if o.strip()] or ["*"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # Configure appropriately for production
-        allow_credentials=True,
+        allow_origins=allow_origins,
+        allow_credentials=allow_origins != ["*"],
         allow_methods=["*"],
         allow_headers=["*"],
     )
     
-    # Store resolver instance
+    # Store resolver and stateless helpers
     app.state.resolver = resolver
     app.state.start_time = time.time()
+    app.state.correlator = FlowCorrelator(resolver)
     
     @app.middleware("http")
     async def metrics_middleware(request, call_next):
@@ -275,27 +290,9 @@ def create_app(resolver) -> FastAPI:
         
         try:
             # Parse time range
-            start_time = None
-            end_time = None
-            
-            if request.start_time:
-                try:
-                    start_time = datetime.fromisoformat(request.start_time.replace('Z', '+00:00'))
-                except ValueError as e:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Invalid start_time format: {e}"
-                    )
-            
-            if request.end_time:
-                try:
-                    end_time = datetime.fromisoformat(request.end_time.replace('Z', '+00:00'))
-                except ValueError as e:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Invalid end_time format: {e}"
-                    )
-            
+            start_time = _parse_iso_datetime(request.start_time, "start_time") if request.start_time else None
+            end_time = _parse_iso_datetime(request.end_time, "end_time") if request.end_time else None
+
             # Query flows from database
             db_connector = get_db_connector()
             flows = db_connector.query_flows(
@@ -303,12 +300,11 @@ def create_app(resolver) -> FastAPI:
                 end_time=end_time,
                 limit=request.limit
             )
-            
+
             logger.info(f"Retrieved {len(flows)} flows from database")
-            
+
             # Correlate flows with pod identities
-            correlator = FlowCorrelator(resolver)
-            correlated_flows = correlator.correlate_flows(flows)
+            correlated_flows = app.state.correlator.correlate_flows(flows)
             
             logger.info(f"Correlated {len(correlated_flows)} flows")
             
